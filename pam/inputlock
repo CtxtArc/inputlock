@@ -1,0 +1,4 @@
+#%PAM-1.0
+
+# Same as swaylock on Arch: check the password like a normal login.
+auth include login
