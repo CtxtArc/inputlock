@@ -9,6 +9,8 @@ pub enum Phase {
     Typing,
     Verifying,
     Wrong,
+    /// PAM refused for a reason other than a typo (e.g. account locked).
+    Blocked,
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +39,7 @@ const IDLE: u32 = 0x7f849c;
 const TYPING: u32 = 0x89b4fa;
 const VERIFY: u32 = 0xf9e2af;
 const WRONG: u32 = 0xf38ba8;
+const BLOCKED: u32 = 0xfab387;
 
 /// Draws a full frame. `w`/`h` are buffer pixels, `scale` the buffer scale.
 pub fn draw(canvas: &mut [u8], w: u32, h: u32, scale: u32, style: Style, phase: Phase, len: usize) {
@@ -62,6 +65,7 @@ pub fn draw(canvas: &mut [u8], w: u32, h: u32, scale: u32, style: Style, phase: 
         Phase::Typing => TYPING,
         Phase::Verifying => VERIFY,
         Phase::Wrong => WRONG,
+        Phase::Blocked => BLOCKED,
     };
 
     let mut cv = Canvas { buf: canvas, w, h };
@@ -96,7 +100,7 @@ pub fn draw(canvas: &mut [u8], w: u32, h: u32, scale: u32, style: Style, phase: 
                 cv.circle(cx, ly, dot_r, col);
             }
         }
-        Phase::Wrong => {
+        Phase::Wrong | Phase::Blocked => {
             // A small "×" made of dots across the area center.
             let cx = area_x + area_w / 2.0;
             for i in -3i32..=3 {
@@ -216,7 +220,7 @@ mod tests {
 
     #[test]
     fn premultiplied_invariant_holds() {
-        for phase in [Phase::Idle, Phase::Typing, Phase::Verifying, Phase::Wrong] {
+        for phase in [Phase::Idle, Phase::Typing, Phase::Verifying, Phase::Wrong, Phase::Blocked] {
             for px in frame(0.2, true, phase).chunks_exact(4) {
                 assert!(px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3], "{px:?}");
             }

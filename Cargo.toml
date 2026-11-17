@@ -1,6 +1,6 @@
 [package]
 name = "inputlock"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Lock keyboard and pointer on sway while the screen keeps updating; unlock with your password (PAM)"
 license = "MIT"

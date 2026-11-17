@@ -57,8 +57,16 @@ extern "C" {
     fn pam_strerror(pamh: *mut c_void, errnum: c_int) -> *const c_char;
 }
 
-/// Answers every prompt with the password in `appdata_ptr` (a NUL-terminated
-/// C string). Info / error messages are ignored.
+/// Passed to the conversation function through `appdata_ptr`.
+struct ConvData {
+    /// NUL-terminated password.
+    password: *const c_char,
+    /// PAM_ERROR_MSG / PAM_TEXT_INFO texts, e.g. pam_faillock's
+    /// "The account is locked due to 3 failed logins."
+    messages: Vec<String>,
+}
+
+/// Answers every prompt with the password and collects info / error messages.
 extern "C" fn conversation(
     num_msg: c_int,
     msg: *mut *const PamMessage,
@@ -69,7 +77,11 @@ extern "C" fn conversation(
         return PAM_CONV_ERR;
     }
     let n = num_msg as usize;
-    let password = appdata_ptr as *const c_char;
+    if appdata_ptr.is_null() {
+        return PAM_CONV_ERR;
+    }
+    let data = unsafe { &mut *(appdata_ptr as *mut ConvData) };
+    let password = data.password;
 
     // PAM takes ownership of this array and of every `resp` string in it.
     let replies =
@@ -105,7 +117,15 @@ extern "C" fn conversation(
                 }
                 unsafe { (*replies.add(i)).resp = dup };
             }
-            PAM_ERROR_MSG | PAM_TEXT_INFO => {}
+            PAM_ERROR_MSG | PAM_TEXT_INFO => {
+                let text = unsafe { (*m).msg };
+                if !text.is_null() {
+                    let t = unsafe { CStr::from_ptr(text) }.to_string_lossy().trim().to_string();
+                    if !t.is_empty() {
+                        data.messages.push(t);
+                    }
+                }
+            }
             _ => {
                 free_all(i);
                 return PAM_CONV_ERR;
@@ -119,8 +139,9 @@ extern "C" fn conversation(
 
 #[derive(Debug)]
 pub enum AuthError {
-    /// Wrong password (or account locked etc.) — normal failure.
-    Denied(String),
+    /// PAM said no. `messages` holds anything modules told the user
+    /// (empty for a plain wrong password).
+    Denied { reason: String, messages: Vec<String> },
     /// Could not even start PAM.
     System(String),
 }
@@ -130,13 +151,17 @@ pub fn authenticate(service: &CStr, user: &CStr, password: &str) -> Result<(), A
     let mut buf: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(password.len() + 1));
     buf.extend_from_slice(password.as_bytes());
     if buf.contains(&0) {
-        return Err(AuthError::Denied("password contains NUL byte".into()));
+        return Err(AuthError::Denied {
+            reason: "password contains NUL byte".into(),
+            messages: Vec::new(),
+        });
     }
     buf.push(0);
 
+    let mut data = ConvData { password: buf.as_ptr() as *const c_char, messages: Vec::new() };
     let conv = PamConv {
         conv: conversation,
-        appdata_ptr: buf.as_ptr() as *mut c_void,
+        appdata_ptr: &mut data as *mut ConvData as *mut c_void,
     };
 
     let mut handle: *mut c_void = ptr::null_mut();
@@ -157,7 +182,7 @@ pub fn authenticate(service: &CStr, user: &CStr, password: &str) -> Result<(), A
                 CStr::from_ptr(s).to_string_lossy().into_owned()
             }
         };
-        Err(AuthError::Denied(msg))
+        Err(AuthError::Denied { reason: msg, messages: std::mem::take(&mut data.messages) })
     };
     unsafe { pam_end(handle, rc) };
     result

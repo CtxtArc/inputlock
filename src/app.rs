@@ -85,6 +85,8 @@ pub struct App {
     phase: Phase,
     /// Length shown while PAM checks a password we no longer hold.
     pending_len: usize,
+    /// Attempts sent to the PAM thread that haven't been answered yet.
+    in_flight: usize,
     ctrl: bool,
     auth_tx: mpsc::Sender<Zeroizing<String>>,
     wrong_timer: Option<RegistrationToken>,
@@ -132,6 +134,7 @@ impl App {
             password: Zeroizing::new(String::new()),
             phase: Phase::Idle,
             pending_len: 0,
+            in_flight: 0,
             ctrl: false,
             auth_tx,
             wrong_timer: None,
@@ -220,7 +223,7 @@ impl App {
                     return;
                 }
             };
-        let len = if self.phase == Phase::Verifying {
+        let len = if self.phase == Phase::Verifying && self.password.is_empty() {
             self.pending_len
         } else {
             self.password.chars().count()
@@ -265,31 +268,57 @@ impl App {
         }
         let pw = std::mem::replace(&mut self.password, Zeroizing::new(String::new()));
         self.pending_len = pw.chars().count();
+        // Attempts queue up in the channel and are checked in order, so
+        // nothing typed during PAM's fail delay is lost or merged.
         if self.auth_tx.send(pw).is_err() {
             self.fatal = Some("authentication thread died".into());
             self.exit = true;
             return;
         }
+        self.in_flight += 1;
         self.set_phase(Phase::Verifying);
     }
 
     pub fn on_auth_result(&mut self, r: Result<(), AuthError>) {
+        self.in_flight = self.in_flight.saturating_sub(1);
         match r {
             Ok(()) => {
                 self.unlocked = true;
                 self.exit = true;
             }
             Err(e) => {
-                match e {
-                    AuthError::Denied(m) => eprintln!("inputlock: authentication failed: {m}"),
-                    AuthError::System(m) => eprintln!("inputlock: PAM error: {m}"),
+                // PAM messages (e.g. pam_faillock "account locked") mean the
+                // right password won't work either — show that differently.
+                let (phase, millis) = match e {
+                    AuthError::Denied { reason, messages } => {
+                        eprintln!("inputlock: authentication failed: {reason}");
+                        for m in &messages {
+                            eprintln!("inputlock: PAM: {m}");
+                        }
+                        if messages.is_empty() {
+                            (Phase::Wrong, 1500)
+                        } else {
+                            (Phase::Blocked, 4000)
+                        }
+                    }
+                    AuthError::System(m) => {
+                        eprintln!("inputlock: PAM error: {m}");
+                        (Phase::Blocked, 4000)
+                    }
+                };
+
+                // Another attempt is already queued behind this one: keep
+                // showing "checking" until it answers too.
+                if self.in_flight > 0 {
+                    return;
                 }
-                self.set_phase(Phase::Wrong);
+
+                self.set_phase(phase);
                 let token = self
                     .loop_handle
-                    .insert_source(Timer::from_duration(Duration::from_millis(1500)), |_, _, app| {
+                    .insert_source(Timer::from_duration(Duration::from_millis(millis)), |_, _, app| {
                         app.wrong_timer = None;
-                        if app.phase == Phase::Wrong {
+                        if matches!(app.phase, Phase::Wrong | Phase::Blocked) {
                             let p = app.typing_phase();
                             app.phase = p;
                             app.redraw_all();
@@ -303,9 +332,9 @@ impl App {
     }
 
     fn handle_key(&mut self, event: KeyEvent) {
-        if self.phase == Phase::Verifying {
-            return; // PAM is busy; ignore input until it answers
-        }
+        // Keys are always accepted, even while PAM is busy (it sleeps ~2 s
+        // after a failure), so nothing typed is ever dropped.
+        let busy = self.phase == Phase::Verifying;
         match event.keysym {
             Keysym::Return | Keysym::KP_Enter => return self.submit(),
             Keysym::BackSpace => {
@@ -324,8 +353,12 @@ impl App {
                 }
             }
         }
-        let p = self.typing_phase();
-        self.set_phase(p);
+        if busy {
+            self.redraw_all();
+        } else {
+            let p = self.typing_phase();
+            self.set_phase(p);
+        }
     }
 }
 

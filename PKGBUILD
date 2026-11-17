@@ -1,6 +1,6 @@
 # Build & install from this directory:  makepkg -si
 pkgname=inputlock
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Lock keyboard and mouse on sway while the screen keeps updating; unlock with your password"
 arch=('x86_64' 'aarch64')

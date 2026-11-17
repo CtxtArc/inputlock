@@ -60,7 +60,13 @@ inputlock --no-indicator  # no on-screen pill at all
 
 While locked: type your password and press **Enter**. **Backspace** deletes,
 **Esc** or **Ctrl+U** clears. The pill colour shows the state: grey idle, blue
-typing, yellow checking, red wrong.
+typing, yellow checking, red wrong, orange refused for another reason (e.g.
+the account is temporarily locked by pam_faillock: the message is printed
+to stderr).
+
+You never have to wait after a wrong password: keep typing straight away.
+Attempts are queued and checked in order, so nothing you type during PAM's
+anti-guessing delay is lost.
 
 The exit status is `0` once you've unlocked, so you can chain commands:
 `inputlock && notify-send "welcome back"`.
